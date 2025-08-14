@@ -1,0 +1,408 @@
+--[[ 
+  Redo VN Teleporter - Full Fix
+  - Key: Cailcoincard (48h)
+  - Toggle (black circle) appears AFTER correct key
+  - Max 200 places, auto-refresh (60s), search, drag, nice UI
+  - Author: @Redovn-y8c
+  - Get key: https://linkvertise.com/1379842/dYrmoUtZ7Z3S?o=sharing
+--]]
+
+-- Services
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Config
+local KEY_VALUE = "Cailcoincard"
+local KEY_FILE = "redo_vn_key.json"
+local KEY_DURATION = 48 * 60 * 60 -- 48 hours in seconds
+local GET_KEY_URL = "https://linkvertise.com/1379842/dYrmoUtZ7Z3S?o=sharing"
+local AUTO_REFRESH_SEC = 60
+local MAX_PLACES = 200
+
+-- Helpers: time
+local function now() return os.time() end
+
+-- Key storage helpers (file if available, fallback to getgenv)
+local function readKey()
+    -- try file
+    if type(isfile) == "function" and isfile(KEY_FILE) and type(readfile) == "function" then
+        local ok, raw = pcall(readfile, KEY_FILE)
+        if ok and raw then
+            local ok2, tbl = pcall(function() return HttpService:JSONDecode(raw) end)
+            if ok2 and type(tbl) == "table" then return tbl end
+        end
+    end
+    -- fallback getgenv
+    if getgenv and getgenv()._RedoVNKey then
+        return getgenv()._RedoVNKey
+    end
+    return nil
+end
+
+local function writeKey(tbl)
+    if type(writefile) == "function" then
+        pcall(writefile, KEY_FILE, HttpService:JSONEncode(tbl))
+    end
+    if getgenv then getgenv()._RedoVNKey = tbl end
+end
+
+local function key_valid()
+    local data = readKey()
+    if not data or data.key ~= KEY_VALUE or not data.ts then return false end
+    return (now() - tonumber(data.ts)) <= KEY_DURATION
+end
+
+-- HTTP helpers (safe)
+local function safeHttpGet(url)
+    local ok, res = pcall(function() return game:HttpGet(url) end)
+    if not ok then return nil end
+    return res
+end
+local function safeJson(url)
+    local b = safeHttpGet(url)
+    if not b then return nil end
+    local ok, j = pcall(function() return HttpService:JSONDecode(b) end)
+    if not ok then return nil end
+    return j
+end
+
+-- API: get universeId and places
+local function getUniverseId(placeId)
+    local j = safeJson("https://apis.roblox.com/universes/v1/places/" .. tostring(placeId) .. "/universe")
+    if j and j.universeId then return j.universeId end
+    return nil
+end
+
+local function getPlacesFromUniverse(universeId)
+    local out = {}
+    local cursor
+    while true do
+        local url = ("https://develop.roblox.com/v1/universes/%s/places?sortOrder=Asc&limit=100"):format(tostring(universeId))
+        if cursor then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
+        local j = safeJson(url)
+        if not j or not j.data then break end
+        for _, p in ipairs(j.data) do
+            out[#out+1] = { Name = p.name or ("Place ".. tostring(p.id)), Id = tonumber(p.id) }
+            if #out >= MAX_PLACES then return out end
+        end
+        cursor = j.nextPageCursor
+        if not cursor then break end
+    end
+    return out
+end
+
+-- UI root
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RedoVN_UI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Variables to hold UI refs
+local ToggleBtn, MainFrame, SearchBox, ListHolder, Layout
+local AllPlaces = {}
+
+-- Create UI functions (toggle and main), toggle initially hidden until key accepted
+local function createUI()
+    -- Toggle (circular black), hidden initially
+    ToggleBtn = Instance.new("TextButton")
+    ToggleBtn.Name = "RedoVN_Toggle"
+    ToggleBtn.Size = UDim2.new(0,56,0,56)
+    ToggleBtn.Position = UDim2.new(0, 16, 0.5, -28)
+    ToggleBtn.BackgroundColor3 = Color3.fromRGB(0,0,0) -- black
+    ToggleBtn.Text = "TP"
+    ToggleBtn.Font = Enum.Font.GothamBold
+    ToggleBtn.TextSize = 18
+    ToggleBtn.TextColor3 = Color3.new(1,1,1)
+    ToggleBtn.AutoButtonColor = true
+    ToggleBtn.Visible = false
+    ToggleBtn.Parent = ScreenGui
+    ToggleBtn.Active = true
+    ToggleBtn.Draggable = true
+    local tgCorner = Instance.new("UICorner", ToggleBtn); tgCorner.CornerRadius = UDim.new(1,0)
+    local tgStroke = Instance.new("UIStroke", ToggleBtn); tgStroke.Color = Color3.fromRGB(200,200,200); tgStroke.Thickness = 1
+
+    -- MainFrame (hidden until key accepted)
+    MainFrame = Instance.new("Frame")
+    MainFrame.Name = "RedoVN_Main"
+    MainFrame.Size = UDim2.new(0,460,0,440)
+    MainFrame.Position = UDim2.new(0.5,-230,0.5,-220)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(28,28,30)
+    MainFrame.Parent = ScreenGui
+    MainFrame.Active = true
+    MainFrame.Draggable = true
+    MainFrame.Visible = false
+    Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0,14)
+    local mfStroke = Instance.new("UIStroke", MainFrame); mfStroke.Color = Color3.fromRGB(80,80,90); mfStroke.Thickness = 1.5
+
+    -- Title bar
+    local TitleBar = Instance.new("Frame", MainFrame)
+    TitleBar.Size = UDim2.new(1,0,0,56)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(22,22,24)
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0,14)
+    Instance.new("UIStroke", TitleBar).Thickness = 1
+
+    local Title = Instance.new("TextLabel", TitleBar)
+    Title.Size = UDim2.new(1, -24, 1, 0)
+    Title.Position = UDim2.new(0,12,0,0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "Redo VN"
+    Title.TextColor3 = Color3.fromRGB(255,255,255)
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 22
+
+    -- Refresh button
+    local RefreshBtn = Instance.new("TextButton", TitleBar)
+    RefreshBtn.Size = UDim2.new(0,96,0,34)
+    RefreshBtn.Position = UDim2.new(1, -108, 0.5, -17)
+    RefreshBtn.Text = "Refresh"
+    RefreshBtn.Font = Enum.Font.GothamBold
+    RefreshBtn.TextSize = 14
+    RefreshBtn.BackgroundColor3 = Color3.fromRGB(60,120,255)
+    Instance.new("UICorner", RefreshBtn).CornerRadius = UDim.new(0,8)
+    RefreshBtn.MouseButton1Click:Connect(function()
+        -- manual refresh
+        pcall(function() 
+            -- run in background
+            task.spawn(function() 
+                local ok, err = pcall(function() 
+                    local uni = getUniverseId(game.PlaceId)
+                    if uni then
+                        AllPlaces = getPlacesFromUniverse(uni) or {}
+                    else
+                        AllPlaces = { { Name = "Current Place", Id = game.PlaceId } }
+                    end
+                    -- trim
+                    while #AllPlaces > MAX_PLACES do table.remove(AllPlaces) end
+                    if ListHolder then renderList(SearchBox.Text) end
+                end)
+            end)
+        end)
+    end)
+
+    -- Search
+    SearchBox = Instance.new("TextBox", MainFrame)
+    SearchBox.Size = UDim2.new(1, -32, 0, 38)
+    SearchBox.Position = UDim2.new(0,16,0,66)
+    SearchBox.PlaceholderText = "Search Place..."
+    SearchBox.Text = ""
+    SearchBox.TextColor3 = Color3.fromRGB(255,255,255)
+    SearchBox.Font = Enum.Font.Gotham
+    SearchBox.TextSize = 14
+    SearchBox.BackgroundColor3 = Color3.fromRGB(44,44,48)
+    Instance.new("UICorner", SearchBox).CornerRadius = UDim.new(0,8)
+    Instance.new("UIStroke", SearchBox).Thickness = 1
+
+    -- List holder
+    ListHolder = Instance.new("ScrollingFrame", MainFrame)
+    ListHolder.Name = "List"
+    ListHolder.Size = UDim2.new(1, -32, 1, -140)
+    ListHolder.Position = UDim2.new(0,16,0,112)
+    ListHolder.CanvasSize = UDim2.new(0,0,0,0)
+    ListHolder.ScrollBarThickness = 8
+    ListHolder.Active = true
+    ListHolder.BackgroundTransparency = 1
+    local Padding = Instance.new("UIPadding", ListHolder)
+    Padding.PaddingTop = UDim.new(0,6); Padding.PaddingBottom = UDim.new(0,10); Padding.PaddingLeft = UDim.new(0,2); Padding.PaddingRight = UDim.new(0,2)
+    Layout = Instance.new("UIListLayout", ListHolder)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Padding = UDim.new(0,8)
+    Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        ListHolder.CanvasSize = UDim2.new(0,0,0, Layout.AbsoluteContentSize.Y + 16)
+    end)
+
+    -- Credit
+    local Credit = Instance.new("TextLabel", MainFrame)
+    Credit.Size = UDim2.new(1, -16, 0, 22)
+    Credit.Position = UDim2.new(0, 8, 1, -28)
+    Credit.BackgroundTransparency = 1
+    Credit.Text = "Made by @Redovn-y8c"
+    Credit.TextColor3 = Color3.fromRGB(210,210,210)
+    Credit.TextSize = 14
+    Credit.Font = Enum.Font.Gotham
+
+    -- Row creation
+    local function makeRow(info)
+        local row = Instance.new("Frame")
+        row.Name = "Row"
+        row.Size = UDim2.new(1, -4, 0, 56)
+        row.BackgroundColor3 = Color3.fromRGB(46,46,52)
+        row.Parent = ListHolder
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0,10)
+        Instance.new("UIStroke", row).Thickness = 1
+
+        local nameLbl = Instance.new("TextLabel", row)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Size = UDim2.new(1, -120, 1, -8)
+        nameLbl.Position = UDim2.new(0, 12, 0, 4)
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.Text = tostring(info.Name)
+        nameLbl.TextColor3 = Color3.fromRGB(240,240,240)
+        nameLbl.Font = Enum.Font.GothamMedium
+        nameLbl.TextSize = 16
+
+        local idLbl = Instance.new("TextLabel", row)
+        idLbl.BackgroundTransparency = 1
+        idLbl.Size = UDim2.new(1, -120, 0, 16)
+        idLbl.Position = UDim2.new(0, 12, 0, 32)
+        idLbl.TextXAlignment = Enum.TextXAlignment.Left
+        idLbl.Text = "ID: " .. tostring(info.Id)
+        idLbl.TextColor3 = Color3.fromRGB(200,200,200)
+        idLbl.Font = Enum.Font.Gotham
+        idLbl.TextSize = 13
+
+        local join = Instance.new("TextButton", row)
+        join.Size = UDim2.new(0, 100, 0, 36)
+        join.Position = UDim2.new(1, -108, 0.5, -18)
+        join.Text = "Join"
+        join.TextColor3 = Color3.fromRGB(255,255,255)
+        join.Font = Enum.Font.GothamBold
+        join.TextSize = 14
+        join.BackgroundColor3 = Color3.fromRGB(70,140,255)
+        Instance.new("UICorner", join).CornerRadius = UDim.new(0,8)
+        Instance.new("UIStroke", join).Thickness = 1
+
+        join.MouseButton1Click:Connect(function()
+            local ok, err = pcall(function() TeleportService:Teleport(tonumber(info.Id), LocalPlayer) end)
+            if not ok then warn("Teleport failed:", err) end
+        end)
+    end
+
+    -- Render list with filter
+    function renderList(filter)
+        -- remove only Row frames (keep UIListLayout)
+        for _, c in ipairs(ListHolder:GetChildren()) do
+            if c:IsA("Frame") and c.Name == "Row" then c:Destroy() end
+        end
+        local q = (filter or ""):lower()
+        local count = 0
+        for _, info in ipairs(AllPlaces) do
+            if count >= MAX_PLACES then break end
+            local hay = ((info.Name or "") .. " " .. tostring(info.Id)):lower()
+            if q == "" or string.find(hay, q, 1, true) then
+                makeRow(info)
+                count = count + 1
+            end
+        end
+    end
+
+    -- bind search
+    SearchBox:GetPropertyChangedSignal("Text"):Connect(function() renderList(SearchBox.Text) end)
+
+    -- toggle click behavior (works after key accepted)
+    ToggleBtn.MouseButton1Click:Connect(function()
+        if MainFrame then
+            MainFrame.Visible = not MainFrame.Visible
+        end
+    end)
+end
+
+-- Create UI (toggle invisible / main hidden). We'll show after key accepted
+createUI()
+
+-- Data refresh function (fetch places and update AllPlaces)
+function refreshPlaces()
+    local uni = getUniverseId(game.PlaceId)
+    local list = {}
+    if uni then
+        list = getPlacesFromUniverse(uni) or {}
+    end
+    if not list or #list == 0 then
+        list = { { Name = "Current Place", Id = game.PlaceId } }
+    end
+    -- trim to MAX_PLACES
+    if #list > MAX_PLACES then
+        local trimmed = {}
+        for i=1, MAX_PLACES do trimmed[i] = list[i] end
+        list = trimmed
+    end
+    AllPlaces = list
+    -- render if main visible/created
+    if ListHolder then
+        -- call the render function, but SearchBox may be nil yet in rare race
+        local filter = (SearchBox and SearchBox.Text) or ""
+        -- Use task.spawn to avoid blocking
+        task.spawn(function() renderList(filter) end)
+    end
+end
+
+-- Auto refresh thread
+local function startAutoRefresh()
+    task.spawn(function()
+        while true do
+            pcall(refreshPlaces)
+            for i=1, AUTO_REFRESH_SEC do task.wait(1) end
+        end
+    end)
+end
+
+-- Key gate UI (asks for key). After key accepted, show toggle and main + start refresh.
+local function showKeyGate()
+    local Gate = Instance.new("Frame")
+    Gate.Name = "RedoVN_KeyGate"
+    Gate.Size = UDim2.new(0,360,0,220)
+    Gate.Position = UDim2.new(0.5,-180,0.5,-110)
+    Gate.BackgroundColor3 = Color3.fromRGB(30,30,32)
+    Gate.Parent = ScreenGui
+    Gate.Active = true; Gate.Draggable = true
+    Instance.new("UICorner", Gate).CornerRadius = UDim.new(0,12)
+    Instance.new("UIStroke", Gate).Thickness = 1.5
+
+    local t = Instance.new("TextLabel", Gate)
+    t.BackgroundTransparency = 1; t.Size = UDim2.new(1,0,0,40)
+    t.Text = "Enter Key - Redo VN"; t.Font = Enum.Font.GothamBold; t.TextSize = 18; t.TextColor3 = Color3.fromRGB(255,255,255)
+
+    local box = Instance.new("TextBox", Gate)
+    box.Size = UDim2.new(1, -24, 0, 40); box.Position = UDim2.new(0,12,0,60)
+    box.PlaceholderText = "Enter key here"; box.BackgroundColor3 = Color3.fromRGB(48,48,52); box.TextColor3 = Color3.fromRGB(255,255,255)
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0,8)
+
+    local submit = Instance.new("TextButton", Gate)
+    submit.Size = UDim2.new(1, -24, 0, 38); submit.Position = UDim2.new(0,12,0,112)
+    submit.Text = "Submit Key"; submit.BackgroundColor3 = Color3.fromRGB(60,160,85)
+    submit.Font = Enum.Font.GothamBold; submit.TextSize = 14
+    Instance.new("UICorner", submit).CornerRadius = UDim.new(0,8)
+
+    local getkey = Instance.new("TextButton", Gate)
+    getkey.Size = UDim2.new(1, -24, 0, 34); getkey.Position = UDim2.new(0,12,0,160)
+    getkey.Text = "Get Key (copied)"; getkey.BackgroundColor3 = Color3.fromRGB(70,70,90)
+    Instance.new("UICorner", getkey).CornerRadius = UDim.new(0,8)
+
+    getkey.MouseButton1Click:Connect(function()
+        if type(setclipboard) == "function" then pcall(setclipboard, GET_KEY_URL) end
+    end)
+
+    submit.MouseButton1Click:Connect(function()
+        if box.Text == KEY_VALUE then
+            writeKey({ key = KEY_VALUE, ts = now() })
+            Gate:Destroy()
+            -- Show toggle and main
+            if ToggleBtn then ToggleBtn.Visible = true end
+            if MainFrame then MainFrame.Visible = true end
+            -- initial refresh and start auto-refresh
+            pcall(refreshPlaces)
+            startAutoRefresh()
+        else
+            box.Text = ""
+            box.PlaceholderText = "Wrong key!"
+        end
+    end)
+end
+
+-- Entry
+if key_valid() then
+    -- show toggle and main
+    if ToggleBtn then ToggleBtn.Visible = true end
+    if MainFrame then MainFrame.Visible = true end
+    pcall(refreshPlaces)
+    startAutoRefresh()
+else
+    -- hide main & show key gate (toggle remains hidden until accept)
+    if MainFrame then MainFrame.Visible = false end
+    if ToggleBtn then ToggleBtn.Visible = false end
+    showKeyGate()
+end
+
+-- End of script
