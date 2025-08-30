@@ -1,6 +1,6 @@
 --[[ 
   Redo VN Teleporter - Full Fix
-  - Key: Cailcoincard (10h)
+  - Key: Cailcoincard (48h)
   - Toggle (black circle) appears AFTER correct key
   - Max 200 places, auto-refresh (60s), search, drag, nice UI
   - Author: @Redovn-y8c
@@ -16,7 +16,7 @@ local LocalPlayer = Players.LocalPlayer
 -- Config
 local KEY_VALUE = "Cailcoincard"
 local KEY_FILE = "redo_vn_key.json"
-local KEY_DURATION = 10 * 60 * 60 -- 10 hours in seconds
+local KEY_DURATION = 48 * 60 * 60 -- 10 hours in seconds
 local GET_KEY_URL = "https://linkvertise.com/1379842/dYrmoUtZ7Z3S?o=sharing"
 local AUTO_REFRESH_SEC = 60
 local MAX_PLACES = 200
